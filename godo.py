@@ -460,6 +460,41 @@ def compile_manual_plan(reason: str) -> str:
     )
 
 
+def compile_no_gui_session_plan() -> str:
+    return "\n".join(
+        [
+            "cat <<'EOF'",
+            "godo will not execute this request.",
+            "No active macOS GUI console session is available.",
+            "Manual steps:",
+            "1) Sign in to the Mac mini desktop as the target user.",
+            "2) Keep that desktop session active and unlocked.",
+            "3) Run the godo command again from SSH.",
+            "EOF",
+        ]
+    )
+
+
+def get_console_user() -> str | None:
+    try:
+        result = subprocess.run(
+            ["/usr/bin/stat", "-f%Su", "/dev/console"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    user = result.stdout.strip()
+    if not user or user in {"root", "loginwindow"}:
+        return None
+    return user
+
+
 def compile_plan(plan: Plan) -> CompiledPlan:
     requested_risk = plan.risk
     action = plan.action
@@ -595,6 +630,13 @@ def main() -> int:
     try:
         plan, plan_json = plan_from_model(args.request)
         compiled = compile_plan(plan)
+
+        if plan.requires_gui_session and get_console_user() is None:
+            compiled = CompiledPlan(
+                script=compile_no_gui_session_plan(),
+                risk="HIGH",
+                executable=False,
+            )
 
         banned_hits = detect_banned_tokens(compiled.script)
         if banned_hits:
