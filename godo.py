@@ -435,12 +435,12 @@ def compile_files_script(action: str, args: dict[str, Any]) -> str:
 
 
 def compile_manual_plan(reason: str) -> str:
-    safe_reason = reason.strip() or "Request requires administrator privileges or is unsupported."
+    _ = reason
     return "\n".join(
         [
             "cat <<'EOF'",
             "godo will not execute this request.",
-            safe_reason,
+            "This request requires administrator privileges or is outside godo v1 scope.",
             "Manual steps:",
             "1) Open an administrator shell on the Mac mini.",
             "2) Review the intended command for safety.",
