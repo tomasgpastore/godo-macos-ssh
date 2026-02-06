@@ -49,7 +49,7 @@ Required schema:
 {
   "intent": "string",
   "risk": "LOW|MEDIUM|HIGH",
-  "category": "spotify|app|sysinfo|files",
+  "category": "spotify|app|sysinfo|files|shell",
   "action": "string",
   "args": { ... },
   "requires_gui_session": true|false
@@ -57,12 +57,39 @@ Required schema:
 
 Rules:
 - args must always be a JSON object.
-- Supported spotify actions: play, pause, playpause, next, previous, set_volume, current_track.
-- Supported app actions: open, quit. Use args.app_name.
-- Supported sysinfo actions: memory_summary, cpu_top, disk_usage, processes_by_memory.
-- Supported files actions: list_files with optional args.path and args.max_depth.
-- If the request needs administrator privileges or is unsupported/destructive, set risk HIGH, keep a best-fit category, set action to manual_admin_required, and add args.reason.
-- requires_gui_session should be true for AppleScript app-control/spotify actions.
+- Never add extra keys beyond the required schema keys.
+- Never return arrays or markdown. Return exactly one JSON object.
+- Never include sudo, destructive actions, or unsupported shell operators in args.
+- If the request needs administrator privileges, privileged file mutation, destructive operations, or unsupported shell syntax, set risk HIGH, set action to manual_admin_required, and set args.reason.
+- requires_gui_session must be true for Spotify and AppleScript app quit actions.
+
+Category instructions:
+- spotify:
+  - actions: play, pause, playpause, next, previous, set_volume, current_track
+  - set_volume requires args.volume integer 0-100
+- app:
+  - actions: open, quit
+  - args.app_name required
+- sysinfo:
+  - actions: memory_summary, cpu_top, disk_usage, processes_by_memory
+- files:
+  - action: list_files
+  - optional args.path string, args.max_depth integer
+- shell:
+  - action: run_shell
+  - args.executable required string (single binary/command name, no spaces)
+  - args.arguments optional array of strings
+  - args.working_directory optional string
+  - if needed, args.raw_command allowed only for a single command with no shell operators
+
+Reliability guidance:
+- Prefer built-in categories over shell when possible.
+- For user intents that map to shell, choose standard macOS CLI commands.
+- Keep args deterministic and minimal.
+- Example shell mappings:
+  - "show git status" -> {"category":"shell","action":"run_shell","args":{"executable":"git","arguments":["status","-sb"]}}
+  - "list home directory" -> {"category":"shell","action":"run_shell","args":{"executable":"ls","arguments":["-la","/Users/server"]}}
+  - "show python version" -> {"category":"shell","action":"run_shell","args":{"executable":"python3","arguments":["--version"]}}
 """
 
 REPAIR_PROMPT = """Your previous response was invalid.
@@ -79,7 +106,7 @@ REQUIRED_PLAN_KEYS = {
     "args",
     "requires_gui_session",
 }
-ALLOWED_CATEGORIES = {"spotify", "app", "sysinfo", "files"}
+ALLOWED_CATEGORIES = {"spotify", "app", "sysinfo", "files", "shell"}
 ALLOWED_RISKS = {"LOW", "MEDIUM", "HIGH"}
 
 
@@ -100,6 +127,7 @@ class Plan:
 @dataclass(frozen=True)
 class CompiledPlan:
     script: str
+    display_script: str
     risk: str
     executable: bool
 
@@ -209,6 +237,13 @@ def normalize_action(category: str, action: str) -> str:
             "ls": "list_files",
             "list_directory": "list_files",
             "show_files": "list_files",
+        },
+        "shell": {
+            "run": "run_shell",
+            "execute": "run_shell",
+            "command": "run_shell",
+            "shell": "run_shell",
+            "run_command": "run_shell",
         },
     }
     return maps.get(category, {}).get(token, token)
@@ -366,7 +401,13 @@ def resolve_allowed_path(path_input: str) -> str:
     )
 
 
-def compile_spotify_script(action: str, args: dict[str, Any]) -> str:
+def build_display_osascript(applescript_body: str) -> str:
+    lines = [line.strip() for line in applescript_body.splitlines() if line.strip()]
+    inline = "; ".join(lines)
+    return f"osascript -e {shlex.quote(inline)}"
+
+
+def compile_spotify_script(action: str, args: dict[str, Any]) -> tuple[str, str]:
     if action == "play":
         applescript = 'tell application "Spotify" to play'
     elif action == "pause":
@@ -396,41 +437,45 @@ def compile_spotify_script(action: str, args: dict[str, Any]) -> str:
     else:
         raise GodoError(f"Unsupported Spotify action: {action}")
 
-    return build_asuser_osascript(applescript)
+    return build_asuser_osascript(applescript), build_display_osascript(applescript)
 
 
-def compile_app_script(action: str, args: dict[str, Any]) -> tuple[str, bool]:
+def compile_app_script(action: str, args: dict[str, Any]) -> tuple[str, str]:
     app_name = extract_app_name(args)
     if action == "open":
         script = f"open -a {shlex.quote(app_name)}"
-        return script, False
+        return script, script
 
     if action == "quit":
         escaped = escape_applescript_string(app_name)
         applescript = f'tell application "{escaped}" to quit'
-        return build_asuser_osascript(applescript), True
+        return build_asuser_osascript(applescript), build_display_osascript(applescript)
 
     raise GodoError(f"Unsupported app action: {action}")
 
 
-def compile_sysinfo_script(action: str) -> str:
+def compile_sysinfo_script(action: str) -> tuple[str, str]:
     if action == "memory_summary":
-        return "\n".join(
+        script = "\n".join(
             [
                 "top -l 1 | grep PhysMem",
                 "vm_stat",
             ]
         )
+        return script, "top -l 1 | grep PhysMem && vm_stat"
     if action == "cpu_top":
-        return "ps -Ao pid,ppid,%cpu,%mem,comm -r | head -n 15"
+        script = "ps -Ao pid,ppid,%cpu,%mem,comm -r | head -n 15"
+        return script, script
     if action == "disk_usage":
-        return "df -h"
+        script = "df -h"
+        return script, script
     if action == "processes_by_memory":
-        return "ps -Ao pid,ppid,%mem,%cpu,rss,comm -r | head -n 20"
+        script = "ps -Ao pid,ppid,%mem,%cpu,rss,comm -r | head -n 20"
+        return script, script
     raise GodoError(f"Unsupported sysinfo action: {action}")
 
 
-def compile_files_script(action: str, args: dict[str, Any]) -> str:
+def compile_files_script(action: str, args: dict[str, Any]) -> tuple[str, str]:
     if action != "list_files":
         raise GodoError(f"Unsupported files action: {action}")
 
@@ -444,9 +489,110 @@ def compile_files_script(action: str, args: dict[str, Any]) -> str:
         raise GodoError("files.list_files max_depth must be an integer.") from exc
     depth = max(1, min(depth, 8))
 
-    return (
-        f"find {shlex.quote(resolved)} -maxdepth {depth} -mindepth 1 -print | sort"
-    )
+    script = f"find {shlex.quote(resolved)} -maxdepth {depth} -mindepth 1 -print | sort"
+    return script, script
+
+
+def extract_shell_command_parts(args: dict[str, Any]) -> tuple[str, list[str]]:
+    raw_command = args.get("raw_command")
+    if isinstance(raw_command, str) and raw_command.strip():
+        raw = raw_command.strip()
+        if any(op in raw for op in ("|", ";", "&&", "||", "`", "$(", "<", ">")):
+            raise GodoError(
+                "shell.raw_command may only contain a single command without shell operators."
+            )
+        try:
+            parts = shlex.split(raw)
+        except ValueError as exc:
+            raise GodoError("Invalid shell.raw_command format.") from exc
+        if not parts:
+            raise GodoError("shell.raw_command did not produce a valid command.")
+        return parts[0], parts[1:]
+
+    executable = args.get("executable")
+    if not isinstance(executable, str) or not executable.strip():
+        raise GodoError("shell.run_shell requires args.executable.")
+    executable = executable.strip()
+    if any(ch in executable for ch in (" ", "\t", "\n", "|", "&", ";", "<", ">")):
+        raise GodoError("shell.executable must be a single command name without operators.")
+
+    arguments_raw = args.get("arguments", [])
+    if not isinstance(arguments_raw, list):
+        raise GodoError("shell.arguments must be an array of strings.")
+
+    arguments: list[str] = []
+    for value in arguments_raw:
+        if not isinstance(value, str):
+            raise GodoError("shell.arguments must contain strings only.")
+        arguments.append(value)
+    return executable, arguments
+
+
+def get_shell_minimum_risk(executable: str) -> str:
+    low_risk = {
+        "cat",
+        "date",
+        "df",
+        "du",
+        "echo",
+        "find",
+        "grep",
+        "head",
+        "id",
+        "ls",
+        "ps",
+        "pwd",
+        "rg",
+        "stat",
+        "sw_vers",
+        "sysctl",
+        "tail",
+        "top",
+        "uname",
+        "uptime",
+        "vm_stat",
+        "whoami",
+        "which",
+    }
+    high_risk = {
+        "brew",
+        "defaults",
+        "kill",
+        "killall",
+        "launchctl",
+        "ln",
+        "mkdir",
+        "mv",
+        "networksetup",
+        "osascript",
+        "pkill",
+        "softwareupdate",
+        "touch",
+    }
+    if executable in high_risk:
+        return "HIGH"
+    if executable in low_risk:
+        return "LOW"
+    return "MEDIUM"
+
+
+def compile_shell_script(action: str, args: dict[str, Any]) -> tuple[str, str, str]:
+    if action != "run_shell":
+        raise GodoError(f"Unsupported shell action: {action}")
+
+    executable, arguments = extract_shell_command_parts(args)
+    command = " ".join([shlex.quote(executable), *[shlex.quote(arg) for arg in arguments]])
+    display = command
+
+    working_directory = args.get("working_directory")
+    if working_directory is not None:
+        if not isinstance(working_directory, str) or not working_directory.strip():
+            raise GodoError("shell.working_directory must be a non-empty string.")
+        resolved_dir = os.path.realpath(os.path.expanduser(working_directory))
+        command = f"cd {shlex.quote(resolved_dir)} && {command}"
+        display = command
+
+    return command, display, get_shell_minimum_risk(executable)
 
 
 def compile_manual_plan(reason: str) -> str:
@@ -455,7 +601,7 @@ def compile_manual_plan(reason: str) -> str:
         [
             "cat <<'EOF'",
             "godo will not execute this request.",
-            "This request requires administrator privileges or is outside godo v1 scope.",
+            "This request requires administrator privileges or is outside godo v1.1 scope.",
             "Manual steps:",
             "1) Open an administrator shell on the Mac mini.",
             "2) Review the intended command for safety.",
@@ -522,27 +668,44 @@ def compile_plan(plan: Plan) -> CompiledPlan:
     )
     if action == "manual_admin_required" or admin_requested:
         reason = str(plan.args.get("reason", "Administrator-level work requested."))
-        return CompiledPlan(script=compile_manual_plan(reason), risk="HIGH", executable=False)
+        script = compile_manual_plan(reason)
+        return CompiledPlan(
+            script=script,
+            display_script="manual_admin_required",
+            risk="HIGH",
+            executable=False,
+        )
 
     if plan.category == "spotify":
-        script = compile_spotify_script(action, plan.args)
+        script, display_script = compile_spotify_script(action, plan.args)
         minimum_risk = "LOW"
     elif plan.category == "app":
-        script, _requires_gui = compile_app_script(action, plan.args)
+        script, display_script = compile_app_script(action, plan.args)
         minimum_risk = "LOW"
     elif plan.category == "sysinfo":
-        script = compile_sysinfo_script(action)
+        script, display_script = compile_sysinfo_script(action)
         minimum_risk = "LOW"
     elif plan.category == "files":
-        script = compile_files_script(action, plan.args)
+        script, display_script = compile_files_script(action, plan.args)
         minimum_risk = "MEDIUM"
+    elif plan.category == "shell":
+        script, display_script, minimum_risk = compile_shell_script(action, plan.args)
     else:
         script = compile_manual_plan("Unsupported category for this version.")
-        minimum_risk = "HIGH"
-        return CompiledPlan(script=script, risk="HIGH", executable=False)
+        return CompiledPlan(
+            script=script,
+            display_script="manual_unsupported_category",
+            risk="HIGH",
+            executable=False,
+        )
 
     final_risk = stronger_risk(requested_risk, minimum_risk)
-    return CompiledPlan(script=script, risk=final_risk, executable=True)
+    return CompiledPlan(
+        script=script,
+        display_script=display_script,
+        risk=final_risk,
+        executable=True,
+    )
 
 
 def detect_banned_tokens(script: str) -> list[str]:
@@ -578,18 +741,12 @@ def detect_banned_tokens(script: str) -> list[str]:
 def print_plan(plan: Plan, compiled: CompiledPlan, plan_json: dict[str, Any], show_json: bool) -> None:
     print(f"Intent: {plan.intent}")
     print(f"Risk: {compiled.risk}")
-    print("Proposed script:")
-    print("```bash")
-    print(compiled.script)
-    print("```")
+    print(f"Script: {compiled.display_script}")
 
     if show_json:
         print("Model JSON:")
         print(json.dumps(plan_json, indent=2, sort_keys=True))
-        print("Compiled script (debug):")
-        print("```bash")
-        print(compiled.script)
-        print("```")
+        print(f"Compiled script: {compiled.script}")
 
 
 def log_approved_command(plan: Plan, plan_json: dict[str, Any], compiled: CompiledPlan) -> None:
@@ -652,6 +809,7 @@ def main() -> int:
         if plan.requires_gui_session and get_console_user() is None:
             compiled = CompiledPlan(
                 script=compile_no_gui_session_plan(),
+                display_script="manual_no_gui_session",
                 risk="HIGH",
                 executable=False,
             )
@@ -664,13 +822,7 @@ def main() -> int:
 
         print_plan(plan, compiled, plan_json, args.json)
 
-        if compiled.risk in {"MEDIUM", "HIGH"}:
-            print(
-                f"WARNING: {compiled.risk} risk action. Review every line before approval."
-            )
-
         if args.dry_run:
-            print("Dry run mode: not executing.")
             return 0
 
         if not prompt_for_approval():

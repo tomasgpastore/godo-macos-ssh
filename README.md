@@ -1,7 +1,7 @@
 # godo
 
 `godo` is a guarded macOS CLI for natural-language automation over SSH.
-It always shows the exact script first and only runs after explicit approval.
+It shows a simplified command preview and only runs after explicit approval.
 
 ## Requirements
 - macOS (tested for SSH use on Mac mini)
@@ -28,8 +28,8 @@ godo --json "natural language request"
 Output flow:
 1. Restated intent
 2. Risk level (`LOW`, `MEDIUM`, `HIGH`)
-3. Proposed script in one copy-paste block
-4. Approval prompt: `Run this now? (y/N)`
+3. Simplified script command (`Script: ...`)
+4. Approval prompt (`Run this now? (y/N)`)
 
 Only `y` or `yes` executes.
 
@@ -39,7 +39,15 @@ godo "pause spotify"
 godo "set spotify volume to 30"
 godo "what is using ram"
 godo "open obsidian"
+godo "git status in this folder"
+godo "list all files in /Users/server/Documents"
 ```
+
+## v1.1 Command Coverage
+- Built-in categories: `spotify`, `app`, `sysinfo`, `files`
+- Generic category: `shell` (`run_shell`) for broad command support with structured args
+- Shell plans compile from JSON fields (`executable`, `arguments`, optional `working_directory`)
+- Dangerous/unsupported requests still become non-executing manual plans
 
 ## Safety Model
 - The model returns JSON only and is schema-validated.
