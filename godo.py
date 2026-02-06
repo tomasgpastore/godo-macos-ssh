@@ -49,7 +49,7 @@ Required schema:
 {
   "intent": "string",
   "risk": "LOW|MEDIUM|HIGH",
-  "category": "spotify|app|sysinfo|files|shell",
+  "category": "spotify|app|sysinfo|files|speech|shell",
   "action": "string",
   "args": { ... },
   "requires_gui_session": true|false
@@ -75,6 +75,9 @@ Category instructions:
 - files:
   - action: list_files
   - optional args.path string, args.max_depth integer
+- speech:
+  - action: speak_text
+  - args.text required string
 - shell:
   - action: run_shell
   - args.executable required string (single binary/command name, no spaces)
@@ -84,9 +87,11 @@ Category instructions:
 
 Reliability guidance:
 - Prefer built-in categories over shell when possible.
+- Requests that start with say/read/speak should use category speech with action speak_text.
 - For user intents that map to shell, choose standard macOS CLI commands.
 - Keep args deterministic and minimal.
 - Example shell mappings:
+  - "say hello world" -> {"category":"speech","action":"speak_text","args":{"text":"hello world"}}
   - "show git status" -> {"category":"shell","action":"run_shell","args":{"executable":"git","arguments":["status","-sb"]}}
   - "list home directory" -> {"category":"shell","action":"run_shell","args":{"executable":"ls","arguments":["-la","/Users/server"]}}
   - "show python version" -> {"category":"shell","action":"run_shell","args":{"executable":"python3","arguments":["--version"]}}
@@ -106,8 +111,12 @@ REQUIRED_PLAN_KEYS = {
     "args",
     "requires_gui_session",
 }
-ALLOWED_CATEGORIES = {"spotify", "app", "sysinfo", "files", "shell"}
+ALLOWED_CATEGORIES = {"spotify", "app", "sysinfo", "files", "speech", "shell"}
 ALLOWED_RISKS = {"LOW", "MEDIUM", "HIGH"}
+DIRECT_SPEECH_PATTERN = re.compile(
+    r"^\s*(say|speak|speck|read)(?:\s+out\s+loud)?\s+(?P<text>.+?)\s*$",
+    re.IGNORECASE,
+)
 
 
 class GodoError(Exception):
@@ -194,6 +203,32 @@ def parse_json_object(raw_text: str) -> dict[str, Any] | None:
     return None
 
 
+def strip_wrapping_quotes(text: str) -> str:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        return text[1:-1].strip()
+    return text
+
+
+def parse_direct_speech_request(request_text: str) -> tuple[Plan, dict[str, Any]] | None:
+    match = DIRECT_SPEECH_PATTERN.match(request_text.strip())
+    if match is None:
+        return None
+
+    spoken_text = strip_wrapping_quotes(match.group("text").strip())
+    if not spoken_text:
+        raise GodoError("Speech command requires text to read aloud.")
+
+    plan_json: dict[str, Any] = {
+        "intent": f"Speak aloud: {spoken_text}",
+        "risk": "LOW",
+        "category": "speech",
+        "action": "speak_text",
+        "args": {"text": spoken_text},
+        "requires_gui_session": False,
+    }
+    return validate_plan(plan_json), plan_json
+
+
 def normalize_token(token: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", token.strip().lower()).strip("_")
 
@@ -237,6 +272,15 @@ def normalize_action(category: str, action: str) -> str:
             "ls": "list_files",
             "list_directory": "list_files",
             "show_files": "list_files",
+        },
+        "speech": {
+            "say": "speak_text",
+            "speak": "speak_text",
+            "speck": "speak_text",
+            "read": "speak_text",
+            "read_aloud": "speak_text",
+            "text_to_speech": "speak_text",
+            "tts": "speak_text",
         },
         "shell": {
             "run": "run_shell",
@@ -299,6 +343,10 @@ def plan_from_model(request_text: str) -> tuple[Plan, dict[str, Any]]:
             raise GodoError("GODO_PLAN_JSON is set but not valid JSON.")
         plan = validate_plan(parsed)
         return plan, parsed
+
+    direct_plan = parse_direct_speech_request(request_text)
+    if direct_plan is not None:
+        return direct_plan
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -493,6 +541,23 @@ def compile_files_script(action: str, args: dict[str, Any]) -> tuple[str, str]:
     return script, script
 
 
+def extract_speech_text(args: dict[str, Any]) -> str:
+    for key in ("text", "message", "content"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raise GodoError("speech.speak_text requires args.text.")
+
+
+def compile_speech_script(action: str, args: dict[str, Any]) -> tuple[str, str]:
+    if action != "speak_text":
+        raise GodoError(f"Unsupported speech action: {action}")
+
+    text = extract_speech_text(args)
+    script = f"say -- {shlex.quote(text)}"
+    return script, script
+
+
 def extract_shell_command_parts(args: dict[str, Any]) -> tuple[str, list[str]]:
     raw_command = args.get("raw_command")
     if isinstance(raw_command, str) and raw_command.strip():
@@ -601,7 +666,7 @@ def compile_manual_plan(reason: str) -> str:
         [
             "cat <<'EOF'",
             "godo will not execute this request.",
-            "This request requires administrator privileges or is outside godo v1.1 scope.",
+            "This request requires administrator privileges or is outside godo v1.2 scope.",
             "Manual steps:",
             "1) Open an administrator shell on the Mac mini.",
             "2) Review the intended command for safety.",
@@ -688,6 +753,9 @@ def compile_plan(plan: Plan) -> CompiledPlan:
     elif plan.category == "files":
         script, display_script = compile_files_script(action, plan.args)
         minimum_risk = "MEDIUM"
+    elif plan.category == "speech":
+        script, display_script = compile_speech_script(action, plan.args)
+        minimum_risk = "LOW"
     elif plan.category == "shell":
         script, display_script, minimum_risk = compile_shell_script(action, plan.args)
     else:

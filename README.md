@@ -41,10 +41,13 @@ godo "what is using ram"
 godo "open obsidian"
 godo "git status in this folder"
 godo "list all files in /Users/server/Documents"
+godo "say deployment completed"
+godo "read out loud \"meeting starts in 5 minutes\""
 ```
 
-## v1.1 Command Coverage
-- Built-in categories: `spotify`, `app`, `sysinfo`, `files`
+## v1.2 Command Coverage
+- Built-in categories: `spotify`, `app`, `sysinfo`, `files`, `speech`
+- Speech supports `say/read/speak/speck <text>` and compiles to macOS `say`
 - Generic category: `shell` (`run_shell`) for broad command support with structured args
 - Shell plans compile from JSON fields (`executable`, `arguments`, optional `working_directory`)
 - Dangerous/unsupported requests still become non-executing manual plans
