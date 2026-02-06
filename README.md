@@ -60,6 +60,6 @@ The `CONFIG` dictionary controls:
 To add additional file roots, edit `CONFIG["allowed_roots"]` directly.
 
 ## Notes
-- AppleScript actions run in the active console user session via `launchctl asuser`.
+- AppleScript actions target the active console user session; `godo` uses direct `osascript` when already in that user context and otherwise uses `launchctl asuser`.
 - If Ollama is unreachable or returns invalid JSON twice, `godo` exits with an error.
 - For local non-Ollama testing, you can inject a plan with `GODO_PLAN_JSON`.
