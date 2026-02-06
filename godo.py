@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import pwd
 import re
 import shlex
 import subprocess
@@ -299,18 +300,22 @@ def stronger_risk(risk_a: str, risk_b: str) -> str:
 def build_asuser_osascript(applescript_body: str) -> str:
     return "\n".join(
         [
-            "CONSOLE_USER=$(stat -f%Su /dev/console)",
-            'if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" || "$CONSOLE_USER" == "loginwindow" ]]; then',
+            "CURRENT_UID=$(id -u)",
+            'CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null || true)',
+            'if launchctl print "gui/$CURRENT_UID" >/dev/null 2>&1; then',
+            "  TARGET_UID=\"$CURRENT_UID\"",
+            'elif [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" && "$CONSOLE_USER" != "loginwindow" ]]; then',
+            "  TARGET_UID=$(id -u \"$CONSOLE_USER\")",
+            "else",
             '  echo "No active GUI console user session found." >&2',
             "  exit 1",
             "fi",
-            "CONSOLE_UID=$(id -u \"$CONSOLE_USER\")",
-            'if [[ "$(id -u)" -eq "$CONSOLE_UID" ]]; then',
+            'if [[ "$CURRENT_UID" -eq "$TARGET_UID" ]]; then',
             "  osascript <<'APPLESCRIPT'",
             applescript_body,
             "APPLESCRIPT",
             "else",
-            '  launchctl asuser "$CONSOLE_UID" osascript <<\'APPLESCRIPT\'',
+            '  launchctl asuser "$TARGET_UID" osascript <<\'APPLESCRIPT\'',
             applescript_body,
             "APPLESCRIPT",
             "fi",
@@ -476,6 +481,19 @@ def compile_no_gui_session_plan() -> str:
 
 
 def get_console_user() -> str | None:
+    current_uid = os.getuid()
+    try:
+        gui_check = subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{current_uid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if gui_check.returncode == 0:
+            return pwd.getpwuid(current_uid).pw_name
+    except (OSError, KeyError):
+        pass
+
     try:
         result = subprocess.run(
             ["/usr/bin/stat", "-f%Su", "/dev/console"],
