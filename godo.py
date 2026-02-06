@@ -300,10 +300,20 @@ def build_asuser_osascript(applescript_body: str) -> str:
     return "\n".join(
         [
             "CONSOLE_USER=$(stat -f%Su /dev/console)",
+            'if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" || "$CONSOLE_USER" == "loginwindow" ]]; then',
+            '  echo "No active GUI console user session found." >&2',
+            "  exit 1",
+            "fi",
             "CONSOLE_UID=$(id -u \"$CONSOLE_USER\")",
-            'launchctl asuser "$CONSOLE_UID" osascript <<\'APPLESCRIPT\'',
+            'if [[ "$(id -u)" -eq "$CONSOLE_UID" ]]; then',
+            "  osascript <<'APPLESCRIPT'",
             applescript_body,
             "APPLESCRIPT",
+            "else",
+            '  launchctl asuser "$CONSOLE_UID" osascript <<\'APPLESCRIPT\'',
+            applescript_body,
+            "APPLESCRIPT",
+            "fi",
         ]
     )
 
