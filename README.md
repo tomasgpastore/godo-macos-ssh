@@ -61,5 +61,6 @@ To add additional file roots, edit `CONFIG["allowed_roots"]` directly.
 
 ## Notes
 - AppleScript actions target the active console user session; `godo` uses direct `osascript` when already in that user context and otherwise uses `launchctl asuser`.
+- For requests with `requires_gui_session`, `godo` refuses execution if no active desktop user is logged in and shows manual recovery steps.
 - If Ollama is unreachable or returns invalid JSON twice, `godo` exits with an error.
 - For local non-Ollama testing, you can inject a plan with `GODO_PLAN_JSON`.
