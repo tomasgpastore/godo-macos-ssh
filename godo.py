@@ -22,7 +22,7 @@ CONFIG = {
         "/Users/server/Downloads",
     ],
     "ollama_base_url": os.getenv("GODO_OLLAMA_BASE_URL", "http://localhost:11434"),
-    "ollama_model": os.getenv("GODO_OLLAMA_MODEL", "llama3.1:8b"),
+    "ollama_model": os.getenv("GODO_OLLAMA_MODEL", "ministral-3:8b"),
     "banned_tokens": [
         "sudo",
         "rm",

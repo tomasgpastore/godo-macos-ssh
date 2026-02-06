@@ -7,7 +7,7 @@ It always shows the exact script first and only runs after explicit approval.
 - macOS (tested for SSH use on Mac mini)
 - Python 3.11+
 - Ollama running locally on `http://localhost:11434`
-- A local model pulled in Ollama (default in code: `llama3.1:8b`)
+- A local model pulled in Ollama (default in code: `ministral-3:8b`)
 
 ## Install
 ```bash
